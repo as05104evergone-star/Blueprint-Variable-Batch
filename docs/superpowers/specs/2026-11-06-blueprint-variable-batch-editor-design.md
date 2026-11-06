@@ -1,4 +1,4 @@
-# 蓝图变量批量编辑器 · 设计文档
+﻿# 蓝图变量批量编辑器 · 设计文档
 
 - 日期：2026-11-06
 - 目标引擎：Unreal Engine 5.7.4（`E:\UE_5.7`，Changelist 51494982，`++UE5+Release-5.7`）
@@ -257,3 +257,20 @@ Build.cs 依赖：Core、CoreUObject、Engine、Slate、SlateCore、InputCore、
 | 批量后编译失败导致蓝图损坏感 | 不回滚 + 标红 + 可撤销；确认框提前说明断线风险 |
 | 引用统计漏算未加载子蓝图 | 确认框与状态栏明确注明 |
 | 面板在大蓝图卡顿 | 单遍统计 + `SListView` 虚拟化；只在 5 个时机刷新 |
+
+---
+
+## 11. 实现与验证记录
+
+- 2026-11-06 实现完成，源码位于 `E:\UE_Plugins\BlueprintVariableBatch\Source\BlueprintVariableBatchEditor`；UBT 编译 `Result: Succeeded`（VS2022 14.44 / Windows SDK 10.0.22621，增量约 2~5 秒）。
+- 验证宿主 `E:\UE_Plugins\_VerifyHost` 已改造成最小 C++ 工程（`Source\VerifyHost.Target.cs`、`Source\VerifyHostEditor.Target.cs`、`Source\VerifyHost\*`），插件通过工程内 `Plugins` 目录联接被 UBT 识别；`VerifyHost.uproject` 里显式禁用引擎 Marketplace 下的同名二进制插件 `GASCombatBridge`，否则 UBT 报 `Could not find definition for module 'GASCombatBridge'`。
+- 自动化测试（`UnrealEditor-Cmd ... -ExecCmds="Automation RunTests BlueprintVariableBatch;Quit"`）：
+  - `BlueprintVariableBatch.BatchChangeType`：成功（收集 → 计划 → 应用 → 类型校验 → "无变化"判定）。
+  - `BlueprintVariableBatch.TabSpawn`：成功（打开蓝图编辑器后 Tab 自动出现并生成面板；NullRHI 环境下自动跳过窗口相关断言）。
+- 与设计稿的偏差及原因：
+  1. 确认框改用 `FMessageDialog::Open(EAppMsgType::OkCancel, ...)`（按钮为「确定/取消」），未自绘 `SVariableBatchConfirmDialog`：引擎的 `SModalDialogWithCheckbox` 只有前向声明、定义在 .cpp 内不可复用，自绘 modal 窗口性价比低。
+  2. 插件模块 `LoadingPhase` 定为 `PostEngineInit`：引擎 `FBlueprintEditorModule::StartupModule()` 内 `check(GEditor)`，`Default` 阶段加载会在编辑器初始化前触发断言崩溃。
+  3. 引用统计规则：成员变量按「变量名相同即计数」镜像引擎语义（含其它函数里的同名局部变量节点），局部变量按「函数作用域 + 名字」计数。
+  4. `FBlueprintEditorUtils::GetNodesForVariable` / `GetLoadedChildBlueprints` 在 5.7 属于 protected，改为 `FVariableBatchUtils.h` 内联复刻（与引擎实现逐行一致）。
+  5. 构建计划时以蓝图里的「当前类型」为准，而不是面板缓存的行数据，避免面板数据过期导致重复修改。
+- 仍需人工验收的交互项：第 8 节清单中的多选操作手感、原生类型选择器交互、确认框文案与数字、`Ctrl+Z` 整批撤销、父子蓝图联动、只读/编译中禁用、200 变量规模下的流畅度。

@@ -128,6 +128,93 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	"BlueprintVariableBatch.TabSpawn",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+namespace
+{
+	/** 等待若干帧，给面板的兜底自动打开（FTSTicker 计帧）留出时间。*/
+	class FVariableBatchWaitFramesCommand : public IAutomationLatentCommand
+	{
+	public:
+		explicit FVariableBatchWaitFramesCommand(int32 InFrames)
+			: RemainingFrames(InFrames)
+		{
+		}
+
+		virtual bool Update() override
+		{
+			return --RemainingFrames <= 0;
+		}
+
+	private:
+		int32 RemainingFrames;
+	};
+
+	/** 检查面板 Tab 是否已在蓝图编辑器里出现，随后收尾关闭编辑器。*/
+	class FVariableBatchCheckTabCommand : public IAutomationLatentCommand
+	{
+	public:
+		FVariableBatchCheckTabCommand(TWeakObjectPtr<UBlueprint> InBlueprint, FAutomationTestBase* InTest)
+			: Blueprint(InBlueprint)
+			, Test(InTest)
+		{
+		}
+
+		virtual bool Update() override
+		{
+			UAssetEditorSubsystem* AssetEditorSubsystem = GEditor
+				? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()
+				: nullptr;
+
+			IAssetEditorInstance* EditorInstance = (AssetEditorSubsystem && Blueprint.IsValid())
+				? AssetEditorSubsystem->FindEditorForAsset(Blueprint.Get(), false)
+				: nullptr;
+
+			FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(EditorInstance);
+			if (Test)
+			{
+				Test->TestNotNull(TEXT("蓝图编辑器实例仍然有效"), BlueprintEditor);
+			}
+
+			if (BlueprintEditor && BlueprintEditor->GetTabManager().IsValid())
+			{
+				const TSharedPtr<FTabManager> TabManager = BlueprintEditor->GetTabManager();
+				const FTabId BatchTabId(FBlueprintVariableBatchEditorModule::GetTabId());
+
+				const bool bAutoOpened = TabManager->FindExistingLiveTab(BatchTabId).IsValid();
+				if (Test)
+				{
+					Test->TestTrue(TEXT("打开蓝图编辑器后「变量批量编辑器」Tab 自动出现"), bAutoOpened);
+				}
+
+				if (!bAutoOpened && Test)
+				{
+					// 即使既存布局里没有它，也应该可以从「窗口」菜单/代码里手动打开。
+					Test->TestTrue(TEXT("「变量批量编辑器」Tab 可以被手动打开"),
+						TabManager->TryInvokeTab(BatchTabId).IsValid());
+				}
+			}
+
+			if (AssetEditorSubsystem && Blueprint.IsValid())
+			{
+				AssetEditorSubsystem->CloseAllEditorsForAsset(Blueprint.Get());
+			}
+
+			if (UBlueprint* BlueprintObject = Blueprint.Get())
+			{
+				if (UPackage* Package = BlueprintObject->GetOutermost())
+				{
+					Package->SetDirtyFlag(false);
+				}
+			}
+
+			return true;
+		}
+
+	private:
+		TWeakObjectPtr<UBlueprint> Blueprint;
+		FAutomationTestBase* Test;
+	};
+}
+
 bool FVariableBatchTabSpawnTest::RunTest(const FString& Parameters)
 {
 	// 无渲染器（-nullrhi）时 Slate 无法创建浮动的编辑器窗口，会触发 GenericWindow 致命错误；
@@ -170,25 +257,15 @@ bool FVariableBatchTabSpawnTest::RunTest(const FString& Parameters)
 
 	AssetEditorSubsystem->OpenEditorForAsset(Blueprint);
 
-	IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(Blueprint, false);
-	if (!TestNotNull(TEXT("蓝图编辑器实例已创建"), EditorInstance))
+	if (!TestNotNull(TEXT("蓝图编辑器实例已创建"),
+		AssetEditorSubsystem->FindEditorForAsset(Blueprint, false)))
 	{
 		return false;
 	}
 
-	FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(EditorInstance);
-	TSharedPtr<FTabManager> TabManager = BlueprintEditor->GetTabManager();
-	if (!TestTrue(TEXT("TabManager 有效"), TabManager.IsValid()))
-	{
-		return false;
-	}
-
-	const TSharedPtr<SDockTab> BatchTab = TabManager->TryInvokeTab(
-		FTabId(FBlueprintVariableBatchEditorModule::GetTabId()));
-	TestTrue(TEXT("「变量批量编辑器」Tab 可以被打开"), BatchTab.IsValid());
-
-	AssetEditorSubsystem->CloseAllEditorsForAsset(Blueprint);
-	Package->SetDirtyFlag(false);
+	// 布局扩展让 Tab 默认出现在 MyBlueprint 旁边；对已保存布局，模块还有一次 FTSTicker 兜底打开（约 30 帧）。
+	ADD_LATENT_AUTOMATION_COMMAND(FVariableBatchWaitFramesCommand(120));
+	ADD_LATENT_AUTOMATION_COMMAND(FVariableBatchCheckTabCommand(Blueprint, this));
 
 	return true;
 }
