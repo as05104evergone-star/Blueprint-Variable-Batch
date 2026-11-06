@@ -121,4 +121,4 @@ BlueprintVariableBatch/
 
 ## 许可
 
-内部使用；如需分发请自行补充许可证声明。
+[MIT](LICENSE) © 2026 Chives
