@@ -1,0 +1,25 @@
+# 虚幻引擎编译产物
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/Receipts/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.sln
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+
+# 日志
+*.log
+
+# 系统
+Thumbs.db
+Desktop.ini
+.DS_Store
