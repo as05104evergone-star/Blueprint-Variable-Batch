@@ -48,6 +48,22 @@ UE 自带的「我的蓝图（My Blueprint）」面板是单选列表，Details 
 - 点击「应用类别到选中变量」后，会把所有选中的**成员变量**一次改成该类别；局部变量不参与「我的蓝图」分组，会自动跳过并在确认框里注明。
 - 类别只影响编辑器里的变量分组，不改变运行时数据布局，也不会重建节点或额外触发一次编译；整批修改同样是一个事务，一次 Ctrl+Z 即可撤销。
 
+## 为什么没有现成工具能做这件事（2026-11 调研）
+
+写这个插件之前先确认过：UE 5.7 编辑器里确实做不到「多选变量 + 批量改类型」，这不是操作方式的问题——
+
+1. **引擎把「我的蓝图」列表写死成单选。** `SMyBlueprint` 使用的 `SGraphActionMenu`，其内部 `STreeView` 的选择模式固定为 `ESelectionMode::Single`（`SGraphActionMenu.cpp`），没有任何参数或 setter 能在**不改引擎**的前提下打开多选；即便多选，Details 面板的派发逻辑也只取 `SelectedActions[0]`。
+2. **官方论坛的同类需求从 2017 年提到 2025 年仍未实现。** [Feature Request - Select multiple variables](https://forums.unrealengine.com/t/feature-request-select-multiple-variables/402926)——说明这是长期缺口，而不是「已经有人做了但没找到」。
+3. **商业插件里最接近的几个都不做类型：**
+   - [Blueprint Bulk Editor](https://www.fab.com/listings/00d52b04-ac61-440c-9380-03d4169f7a93)：跨资产表格批量改**默认值**、支持 CSV 导入导出，不改类型；
+   - [Blueprint Variable Cleaner](https://www.fab.com/listings/f5567866-a9f2-4e5d-bcf2-ba7691943030)：批量打开蓝图、清理无用变量，不改类型；
+   - [Property Transfer Tool](https://unrealbox.pro/asset/1689)：在资产之间搬属性，不改类型。
+4. **GitHub 上没有公开的同类开源项目**（截至 2026-11）：仓库搜索无相关结果；代码搜索 `ChangeMemberVariableType` 只命中引擎源码 fork，以及 RigVM / ControlRig 里同名但用途不同的内部 API，没有插件在包装它。
+
+所以本插件没有走「调用现成接口」的捷径，而是自建面板 + 复刻引擎 `FBlueprintEditorUtils::ChangeMemberVariableType` / `ChangeLocalVariableType` 的字段处理，把「每个变量一次弹窗、一次搜索、一次编译」合并成「一次确认、一次重建、一次编译」。
+
+如果你知道有同类作品（开源或商业），欢迎开 issue 告诉我，我会把它补到这里。
+
 ## 安装
 
 方式一：把整个 `BlueprintVariableBatch` 目录复制到工程的 `Plugins/` 下（或引擎的 `Engine/Plugins/` 下），然后编译工程。
