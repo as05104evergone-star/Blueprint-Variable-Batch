@@ -9,6 +9,7 @@
 #include "Widgets/Views/SListView.h"
 
 class FBlueprintEditor;
+class SEditableTextBox;
 class SHeaderRow;
 class SPinTypeSelector;
 class SSearchBox;
@@ -72,6 +73,19 @@ private:
 	void UpdateTemplateOptions();
 	FEdGraphPinType ResolveTargetType() const;
 
+	//~ 类别区
+	FReply OnApplyCategoryClicked();
+	bool CanApplyCategory() const;
+	FText GetApplyCategoryButtonText() const;
+	FText GetApplyCategoryTooltip() const;
+	FText GetCategoryInputText() const;
+	void OnCategoryInputChanged(const FText& NewText);
+	TSharedRef<SWidget> OnGenerateCategoryComboItem(TSharedPtr<FString> Item) const;
+	void OnCategoryComboSelectionChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo);
+	FText GetCategoryComboText() const;
+	void UpdateCategoryOptions();
+	FText GetRequestedCategory() const;
+
 	//~ 刷新事件
 	void HandleEditorRefresh();
 	void HandleBlueprintCompiled(UBlueprint* CompiledBlueprint);
@@ -93,6 +107,11 @@ private:
 	TSharedPtr<FVariableBatchEntry> TemplateSelection;
 
 	FString FilterText;
+
+	TSharedPtr<SEditableTextBox> CategoryInput;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> CategoryCombo;
+	TArray<TSharedPtr<FString>> CategoryOptions;
+	FText CategoryInputText;
 	FEdGraphPinType PendingType;
 	bool bCopyTypeMode = false;
 	bool bUpdatingSelection = false;

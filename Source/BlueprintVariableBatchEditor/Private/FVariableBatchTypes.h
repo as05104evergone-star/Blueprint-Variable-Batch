@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "EdGraph/EdGraphPin.h"
@@ -32,6 +32,9 @@ struct FVariableBatchEntry
 
 	/** 显示用变量名（优先使用 FriendlyName） */
 	FString DisplayName;
+
+	/** 变量类别（成员变量在「我的蓝图」里的分组名；空表示默认类别） */
+	FText Category;
 
 	/** 本蓝图内引用该变量的节点数 */
 	int32 RefCount = 0;
@@ -75,6 +78,24 @@ struct FVariableBatchPlan
 
 	/** 因是事件分发器而被跳过的变量数 */
 	int32 NumSkippedDelegates = 0;
+
+	/** 无法执行的原因；为空表示计划有效 */
+	FText FailureReason;
+
+	bool IsValid() const { return FailureReason.IsEmpty(); }
+};
+
+/** 批量修改类别的执行计划。 */
+struct FVariableBatchCategoryPlan
+{
+	/** 需要修改类别的成员变量 */
+	TArray<TSharedPtr<FVariableBatchEntry>> ToChange;
+
+	/** 归一化之后的目标类别（空字符串会被替换成默认类别） */
+	FText TargetCategory;
+
+	/** 因为不是成员变量（局部变量）而被跳过的数量 */
+	int32 NumSkippedLocals = 0;
 
 	/** 无法执行的原因；为空表示计划有效 */
 	FText FailureReason;

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "FVariableBatchTypes.h"
@@ -32,4 +32,16 @@ public:
 
 	/** 执行整批修改。 */
 	static FVariableBatchApplyResult ApplyPlan(UBlueprint* Blueprint, const FVariableBatchPlan& Plan);
+
+	/** 构建「批量修改变量类别」的执行计划：只保留类别确实会变化的成员变量。 */
+	static FVariableBatchCategoryPlan BuildCategoryPlan(
+		UBlueprint* Blueprint,
+		const TArray<TSharedPtr<FVariableBatchEntry>>& Candidates,
+		const FText& RequestedCategory);
+
+	/** 弹出类别修改的确认框。 */
+	static bool ConfirmCategoryPlan(UBlueprint* Blueprint, const FVariableBatchCategoryPlan& Plan);
+
+	/** 执行整批类别修改（单事务；只标记结构修改，不重建节点、不额外编译）。 */
+	static FVariableBatchApplyResult ApplyCategoryPlan(UBlueprint* Blueprint, const FVariableBatchCategoryPlan& Plan);
 };

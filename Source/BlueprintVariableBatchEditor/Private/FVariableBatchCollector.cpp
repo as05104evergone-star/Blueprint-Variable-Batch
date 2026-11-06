@@ -1,4 +1,4 @@
-﻿#include "FVariableBatchCollector.h"
+#include "FVariableBatchCollector.h"
 
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -119,6 +119,7 @@ bool FVariableBatchCollector::Collect(TArray<TSharedPtr<FVariableBatchEntry>>& O
 		Entry->bIsDelegate = Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Delegate;
 		Entry->ScopeLabel = TEXT("成员");
 		Entry->DisplayName = MakeEntryDisplayName(Variable);
+		Entry->Category = Variable.Category;
 		Entry->RefCount = SelfCounts.ByName.FindRef(Variable.VarName);
 		Entry->ChildRefCount = ChildCounts.ByName.FindRef(Variable.VarName);
 		Entry->bHasDefaultValue = !Variable.DefaultValue.IsEmpty();

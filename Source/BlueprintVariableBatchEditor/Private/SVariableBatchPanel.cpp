@@ -13,6 +13,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
@@ -27,6 +28,7 @@ namespace
 {
 	const FName ColumnName_VariableName(TEXT("VariableName"));
 	const FName ColumnName_VariableType(TEXT("VariableType"));
+	const FName ColumnName_Category(TEXT("Category"));
 	const FName ColumnName_Scope(TEXT("Scope"));
 	const FName ColumnName_Refs(TEXT("Refs"));
 	const FName ColumnName_Hint(TEXT("Hint"));
@@ -79,6 +81,31 @@ namespace
 					.ColorAndOpacity(TextColor)
 					.Text(UEdGraphSchema_K2::TypeToText(Entry->Type))
 					.ToolTipText(RowToolTip);
+			}
+
+			if (InColumnName == ColumnName_Category)
+			{
+				FText CategoryText;
+				if (Entry->bIsLocal)
+				{
+					CategoryText = LOCTEXT("CategoryLocalDash", "—");
+				}
+				else if (Entry->Category.IsEmpty())
+				{
+					CategoryText = LOCTEXT("CategoryDefault", "Default");
+				}
+				else
+				{
+					CategoryText = Entry->Category;
+				}
+
+				return SNew(STextBlock)
+					.Font(Font)
+					.ColorAndOpacity(TextColor)
+					.Text(CategoryText)
+					.ToolTipText(Entry->bIsLocal
+						? LOCTEXT("CategoryLocalToolTip", "局部变量不参与「我的蓝图」的类别分组。")
+						: LOCTEXT("CategoryToolTip", "变量在「我的蓝图」中所属的类别，可用下方的「修改变量类别」区批量修改。"));
 			}
 
 			if (InColumnName == ColumnName_Scope)
@@ -234,19 +261,22 @@ void SVariableBatchPanel::Construct(const FArguments& InArgs)
 					SNew(SHeaderRow)
 					+ SHeaderRow::Column(ColumnName_VariableName)
 						.DefaultLabel(LOCTEXT("ColumnVariableName", "变量"))
-						.FillWidth(0.30f)
+						.FillWidth(0.26f)
 					+ SHeaderRow::Column(ColumnName_VariableType)
 						.DefaultLabel(LOCTEXT("ColumnVariableType", "当前类型"))
-						.FillWidth(0.30f)
+						.FillWidth(0.26f)
+					+ SHeaderRow::Column(ColumnName_Category)
+						.DefaultLabel(LOCTEXT("ColumnCategory", "类别"))
+						.FillWidth(0.20f)
 					+ SHeaderRow::Column(ColumnName_Scope)
 						.DefaultLabel(LOCTEXT("ColumnScope", "范围"))
-						.FillWidth(0.20f)
+						.FillWidth(0.13f)
 					+ SHeaderRow::Column(ColumnName_Refs)
 						.DefaultLabel(LOCTEXT("ColumnRefs", "引用"))
-						.FillWidth(0.09f)
+						.FillWidth(0.08f)
 					+ SHeaderRow::Column(ColumnName_Hint)
 						.DefaultLabel(LOCTEXT("ColumnHint", "提示"))
-						.FillWidth(0.23f)
+						.FillWidth(0.20f)
 				)
 			]
 		]
@@ -349,6 +379,67 @@ void SVariableBatchPanel::Construct(const FArguments& InArgs)
 				]
 			]
 		]
+
+		// 类别区（只对成员变量生效）
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(4.f, 0.f, 4.f, 4.f)
+		[
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			.Padding(6.f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::GetFontStyle("BoldFont"))
+					.Text(LOCTEXT("CategorySectionTitle", "修改变量类别（只对成员变量生效）"))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.f, 4.f, 0.f, 0.f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SAssignNew(CategoryInput, SEditableTextBox)
+						.HintText(LOCTEXT("CategoryInputHint", "留空 = Default；多级类别用 | 分隔，例如 战斗|伤害"))
+						.Text(this, &SVariableBatchPanel::GetCategoryInputText)
+						.OnTextChanged(this, &SVariableBatchPanel::OnCategoryInputChanged)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(4.f, 0.f, 0.f, 0.f)
+					.VAlign(VAlign_Center)
+					[
+						SAssignNew(CategoryCombo, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&CategoryOptions)
+						.OnGenerateWidget(this, &SVariableBatchPanel::OnGenerateCategoryComboItem)
+						.OnSelectionChanged(this, &SVariableBatchPanel::OnCategoryComboSelectionChanged)
+						.ToolTipText(LOCTEXT("CategoryComboToolTip", "从本蓝图已有的类别里选一个填入左侧文本框。"))
+						[
+							SNew(STextBlock).Text(this, &SVariableBatchPanel::GetCategoryComboText)
+						]
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(8.f, 0.f, 0.f, 0.f)
+					[
+						SNew(SButton)
+						.OnClicked(this, &SVariableBatchPanel::OnApplyCategoryClicked)
+						.IsEnabled(this, &SVariableBatchPanel::CanApplyCategory)
+						.ToolTipText(this, &SVariableBatchPanel::GetApplyCategoryTooltip)
+						[
+							SNew(STextBlock).Text(this, &SVariableBatchPanel::GetApplyCategoryButtonText)
+						]
+					]
+				]
+			]
+		]
 	];
 
 	RefreshEntries();
@@ -398,6 +489,7 @@ void SVariableBatchPanel::RefreshEntries()
 	AllEntries.Reset();
 	FVariableBatchCollector(GetBlueprint()).Collect(AllEntries);
 	RebuildFilteredEntries();
+	UpdateCategoryOptions();
 
 	UBlueprint* Blueprint = GetBlueprint();
 	UE_LOG(LogTemp, Display, TEXT("[BlueprintVariableBatch] 面板刷新：蓝图 %s，共收集到 %d 个变量。"),
@@ -850,4 +942,168 @@ FText SVariableBatchPanel::GetStatusText() const
 	return StatusText;
 }
 
+void SVariableBatchPanel::UpdateCategoryOptions()
+{
+	TArray<FString> UniqueCategories;
+	for (const TSharedPtr<FVariableBatchEntry>& Entry : AllEntries)
+	{
+		if (!Entry.IsValid() || Entry->bIsLocal || Entry->Category.IsEmpty())
+		{
+			continue;
+		}
+
+		const FString CategoryString = Entry->Category.ToString();
+		if (!UniqueCategories.Contains(CategoryString))
+		{
+			UniqueCategories.Add(CategoryString);
+		}
+	}
+
+	UniqueCategories.Sort();
+
+	CategoryOptions.Reset();
+	for (const FString& CategoryString : UniqueCategories)
+	{
+		CategoryOptions.Add(MakeShared<FString>(CategoryString));
+	}
+
+	if (CategoryCombo.IsValid())
+	{
+		CategoryCombo->RefreshOptions();
+		CategoryCombo->ClearSelection();
+	}
+}
+
+FText SVariableBatchPanel::GetCategoryInputText() const
+{
+	return CategoryInputText;
+}
+
+void SVariableBatchPanel::OnCategoryInputChanged(const FText& NewText)
+{
+	CategoryInputText = NewText;
+}
+
+FText SVariableBatchPanel::GetRequestedCategory() const
+{
+	const FString Trimmed = CategoryInputText.ToString().TrimStartAndEnd();
+	if (Trimmed.IsEmpty())
+	{
+		return UEdGraphSchema_K2::VR_DefaultCategory;
+	}
+
+	return FText::FromString(Trimmed);
+}
+
+TSharedRef<SWidget> SVariableBatchPanel::OnGenerateCategoryComboItem(TSharedPtr<FString> Item) const
+{
+	return SNew(STextBlock).Text(Item.IsValid() ? FText::FromString(*Item) : FText::GetEmpty());
+}
+
+void SVariableBatchPanel::OnCategoryComboSelectionChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo)
+{
+	if (Item.IsValid() && SelectInfo != ESelectInfo::Direct)
+	{
+		CategoryInputText = FText::FromString(*Item);
+		if (CategoryInput.IsValid())
+		{
+			CategoryInput->SetText(CategoryInputText);
+		}
+	}
+}
+
+FText SVariableBatchPanel::GetCategoryComboText() const
+{
+	return LOCTEXT("CategoryComboText", "已有类别…");
+}
+
+FReply SVariableBatchPanel::OnApplyCategoryClicked()
+{
+	UBlueprint* Blueprint = GetBlueprint();
+	if (!Blueprint || bApplying)
+	{
+		return FReply::Handled();
+	}
+
+	const FVariableBatchCategoryPlan Plan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, GetSelectedEntries(), GetRequestedCategory());
+	if (!Plan.IsValid())
+	{
+		StatusText = Plan.FailureReason;
+		return FReply::Handled();
+	}
+
+	if (!FVariableBatchApplier::ConfirmCategoryPlan(Blueprint, Plan))
+	{
+		StatusText = LOCTEXT("CategoryCancelled", "已取消，未修改变量类别。");
+		return FReply::Handled();
+	}
+
+	bApplying = true;
+	const FVariableBatchApplyResult Result = FVariableBatchApplier::ApplyCategoryPlan(Blueprint, Plan);
+	bApplying = false;
+
+	RefreshEntries();
+
+	StatusText = Result.StatusText;
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintVariableBatch] 批量修改类别完成：%s"), *Result.StatusText.ToString());
+
+	return FReply::Handled();
+}
+
+bool SVariableBatchPanel::CanApplyCategory() const
+{
+	if (bApplying)
+	{
+		return false;
+	}
+
+	UBlueprint* Blueprint = GetBlueprint();
+	if (!Blueprint)
+	{
+		return false;
+	}
+
+	FText Error;
+	if (!FVariableBatchApplier::IsBlueprintEditable(Blueprint, Error))
+	{
+		return false;
+	}
+
+	const FVariableBatchCategoryPlan Plan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, GetSelectedEntries(), GetRequestedCategory());
+	return Plan.IsValid() && Plan.ToChange.Num() > 0;
+}
+
+FText SVariableBatchPanel::GetApplyCategoryButtonText() const
+{
+	return LOCTEXT("ApplyCategory", "应用类别到选中变量");
+}
+
+FText SVariableBatchPanel::GetApplyCategoryTooltip() const
+{
+	UBlueprint* Blueprint = GetBlueprint();
+	if (!Blueprint)
+	{
+		return LOCTEXT("CategoryNoBlueprintToolTip", "没有可编辑的蓝图。");
+	}
+
+	FText Error;
+	if (!FVariableBatchApplier::IsBlueprintEditable(Blueprint, Error))
+	{
+		return Error;
+	}
+
+	const FVariableBatchCategoryPlan Plan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, GetSelectedEntries(), GetRequestedCategory());
+	if (!Plan.IsValid())
+	{
+		return Plan.FailureReason;
+	}
+
+	return FText::FromString(FString::Printf(
+		TEXT("把选中的 %d 个成员变量归入类别「%s」。"),
+		Plan.ToChange.Num(),
+		*Plan.TargetCategory.ToString()));
+}
 #undef LOCTEXT_NAMESPACE

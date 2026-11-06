@@ -4,6 +4,7 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "EdGraphSchema_K2.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -270,4 +271,106 @@ bool FVariableBatchTabSpawnTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * 批量改变量类别的核心逻辑测试：临时蓝图 → 计划 → 应用 → 校验 NewVariables 与查询 API。
+ * 只覆盖成员变量路径（局部变量在批量改类别时按设计跳过）。
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FVariableBatchBatchChangeCategoryTest,
+	"BlueprintVariableBatch.BatchChangeCategory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FVariableBatchBatchChangeCategoryTest::RunTest(const FString& Parameters)
+{
+	UPackage* Package = CreatePackage(TEXT("/Temp/BP_VariableBatchCategoryTest"));
+	if (!TestNotNull(TEXT("临时包创建成功"), Package))
+	{
+		return false;
+	}
+
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		Package,
+		TEXT("BP_VariableBatchCategoryTest"),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+
+	if (!TestNotNull(TEXT("临时蓝图创建成功"), Blueprint))
+	{
+		return false;
+	}
+
+	FEdGraphPinType IntType;
+	IntType.PinCategory = UEdGraphSchema_K2::PC_Int;
+
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("CategoryTestA"), IntType);
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("CategoryTestB"), IntType);
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("CategoryTestC"), IntType);
+
+	// 先生成骨架类，让类别查询与元数据同步走完整路径。
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	TArray<TSharedPtr<FVariableBatchEntry>> Entries;
+	const bool bCollected = FVariableBatchCollector(Blueprint).Collect(Entries);
+	TestTrue(TEXT("变量收集成功"), bCollected);
+	TestEqual(TEXT("收集到 3 个成员变量"), Entries.Num(), 3);
+
+	// 1. 全部改为多级类别「战斗|伤害」
+	const FText TargetCategory = FText::FromString(TEXT("战斗|伤害"));
+	const FVariableBatchCategoryPlan Plan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, Entries, TargetCategory);
+	TestTrue(TEXT("类别计划生成成功"), Plan.IsValid());
+	TestEqual(TEXT("计划中 3 个变量待修改"), Plan.ToChange.Num(), 3);
+	TestEqual(TEXT("计划目标类别正确"), Plan.TargetCategory.ToString(), TargetCategory.ToString());
+
+	const FVariableBatchApplyResult Result = FVariableBatchApplier::ApplyCategoryPlan(Blueprint, Plan);
+	TestEqual(TEXT("实际修改 3 个变量"), Result.NumChanged, 3);
+
+	for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+	{
+		TestEqual(
+			FString::Printf(TEXT("变量 %s 的类别已更新"), *Variable.VarName.ToString()),
+			Variable.Category.ToString(),
+			TargetCategory.ToString());
+	}
+
+	// 2. 查询 API 与 NewVariables 一致
+	const FText QueriedCategory =
+		FBlueprintEditorUtils::GetBlueprintVariableCategory(Blueprint, TEXT("CategoryTestA"), nullptr);
+	TestEqual(TEXT("GetBlueprintVariableCategory 读到的类别一致"), QueriedCategory.ToString(), TargetCategory.ToString());
+
+	// 3. 再次应用同样的类别应被判为「无变化」
+	const FVariableBatchCategoryPlan NoChangePlan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, Entries, TargetCategory);
+	TestFalse(TEXT("再次应用时类别计划无效（已是目标类别）"), NoChangePlan.IsValid());
+
+	// 4. 留空输入应回落到默认类别（Default）
+	const FVariableBatchCategoryPlan DefaultPlan =
+		FVariableBatchApplier::BuildCategoryPlan(Blueprint, Entries, FText::GetEmpty());
+	TestTrue(TEXT("空输入时类别计划有效"), DefaultPlan.IsValid());
+	TestEqual(
+		TEXT("空输入的目标类别是默认类别"),
+		DefaultPlan.TargetCategory.ToString(),
+		UEdGraphSchema_K2::VR_DefaultCategory.ToString());
+
+	const FVariableBatchApplyResult DefaultResult =
+		FVariableBatchApplier::ApplyCategoryPlan(Blueprint, DefaultPlan);
+	TestEqual(TEXT("默认类别应用修改 3 个变量"), DefaultResult.NumChanged, 3);
+
+	for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+	{
+		TestEqual(
+			FString::Printf(TEXT("变量 %s 的类别已回落默认"), *Variable.VarName.ToString()),
+			Variable.Category.ToString(),
+			UEdGraphSchema_K2::VR_DefaultCategory.ToString());
+	}
+
+	if (Package)
+	{
+		Package->SetDirtyFlag(false);
+	}
+
+	return true;
+}
 #endif // WITH_DEV_AUTOMATION_TESTS

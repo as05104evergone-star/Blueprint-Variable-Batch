@@ -274,3 +274,54 @@ Build.cs 依赖：Core、CoreUObject、Engine、Slate、SlateCore、InputCore、
   4. `FBlueprintEditorUtils::GetNodesForVariable` / `GetLoadedChildBlueprints` 在 5.7 属于 protected，改为 `FVariableBatchUtils.h` 内联复刻（与引擎实现逐行一致）。
   5. 构建计划时以蓝图里的「当前类型」为准，而不是面板缓存的行数据，避免面板数据过期导致重复修改。
 - 仍需人工验收的交互项：第 8 节清单中的多选操作手感、原生类型选择器交互、确认框文案与数字、`Ctrl+Z` 整批撤销、父子蓝图联动、只读/编译中禁用、200 变量规模下的流畅度。
+---
+
+## 12. 增量需求：批量修改变量类别（2026-11-06 追加）
+
+### 12.1 需求与决策
+
+用户原始诉求（m00971）：「我在开发时喜欢把变量分门别类，所以我希望，这里的类别也可以批量更改，把这个功能加入到同一个窗口可行吗？」
+
+已确认的 4 项决策（m00990）：
+
+| 编号 | 问题 | 结论 |
+| --- | --- | --- |
+| 1 | 类别区放在哪 | **面板底部独立区块**：类型区保持原样，下方新增「修改变量类别」区，各自独立的「应用」按钮 |
+| 2 | 适用范围 | **只做成员变量**：局部变量不参与「我的蓝图」分组，批量改类别时跳过并在确认框/状态栏注明数量 |
+| 3 | 类别输入方式 | **可编辑文本框 + 本蓝图已有类别下拉建议**；支持多级类别（用竖线 `\|` 分隔），可新建类别 |
+| 4 | 是否需要「取类别自选中变量」模板模式 | **不需要** |
+
+### 12.2 引擎 API 依据
+
+- `FBlueprintEditorUtils::SetBlueprintVariableCategory(UBlueprint* Blueprint, const FName& VarName, const UStruct* InLocalVarScope, const FText& NewCategory, bool bDontRecompile = false)`：`BlueprintEditorUtils.h:1189`，实现 `BlueprintEditorUtils.cpp:4058-4137`。空类别 → `UEdGraphSchema_K2::VR_DefaultCategory`；与旧类别 `EqualTo` 直接返回；自带 `FScopedTransaction` + `Blueprint->Modify()`；在 `SkeletonGeneratedClass` 上找到属性且不是原生变量时写 `TargetProperty->SetMetaData(TEXT("Category"), ...)`；同步 `Blueprint->NewVariables[VarIndex].Category`；最后 `MarkBlueprintAsStructurallyModified`。
+- `FBlueprintEditorUtils::GetBlueprintVariableCategory(UBlueprint*, const FName&, const UStruct* InLocalVarScope)`：头文件 `:1232`，实现 `:4296-4324`（骨架类元数据 → 局部变量 → SCS 节点）。
+- 默认类别 `UEdGraphSchema_K2::VR_DefaultCategory` 在 `EdGraphSchema_K2.h:455`；多级类别分隔符为 `|`（`SMyBlueprint.cpp:244` 按 `|` 切根类别）。
+
+### 12.3 面板改动
+
+- 表格新增「类别」列（位于「当前类型」之后）：成员变量显示当前类别（空显示 `Default`），局部变量显示 `—`。
+- 底部新增独立区块：
+  - 标题「修改变量类别（只对成员变量生效）」；
+  - `SEditableTextBox`（提示「留空 = Default；多级类别用 | 分隔，例如 战斗|伤害」）；
+  - 「已有类别…」`SComboBox`，选项来自本蓝图里已经用过的类别（去重排序）；
+  - 「应用类别到选中变量」按钮：仅当有选中成员变量、蓝图可编辑、且至少一个变量的类别与目标不同时可用。
+
+### 12.4 应用流程（`FVariableBatchApplier` 新增三个函数）
+
+1. `BuildCategoryPlan(UBlueprint*, const TArray<TSharedPtr<FVariableBatchEntry>>&, const FText& RequestedCategory)`：
+   - 蓝图不可编辑 → `FailureReason`；
+   - 目标类别 `TrimStartAndEnd()` 为空 → `VR_DefaultCategory`；
+   - 逐个候选：局部变量 → `NumSkippedLocals++` 并跳过；否则用 `GetBlueprintVariableCategory` 读**蓝图里的当前类别**（空视为 `Default`），与目标 `EqualTo` 则跳过；
+   - 无变化时 `FailureReason = 「选中的成员变量已经都在该类别下，没有需要修改的变量。」`。
+2. `ConfirmCategoryPlan(...)`：`FMessageDialog::Open(EAppMsgType::OkCancel, ...)`，正文含变量数量、目标类别、跳过局部变量数、说明「类别只影响编辑器分组、不改变运行时布局、不重建节点」以及「整批可用一次 Ctrl+Z 撤销」。
+3. `ApplyCategoryPlan(...)`：
+   - 单个 `FScopedTransaction("批量修改变量类别")` + `Blueprint->Modify()`；
+   - 逐条 `FindNewVariableIndex` → 写 `NewVariables[Index].Category` → 同步骨架类属性 `Category` 元数据（`Cast<UClass>(TargetProperty->GetOwnerStruct())`，`OuterClass == nullptr || ClassGeneratedBy == nullptr` 视为原生变量，跳过写元数据）；
+   - 全部写完后 `MarkBlueprintAsStructurallyModified` 一次；**不重建节点、不额外调用 `CompileBlueprint`**（引擎会在帧末自动重编译）；
+   - 状态栏：`已将 N 个变量归入类别「X」。`
+
+### 12.5 验证
+
+- 新增自动化测试 `BlueprintVariableBatch.BatchChangeCategory`（`FVariableBatchTests.cpp`）：临时蓝图 3 个 int 成员变量 → 编译生成骨架类 → 收集 → 生成「战斗|伤害」计划（断言 3 个待改）→ 应用（断言修改 3 个）→ 断言 `NewVariables` 与 `GetBlueprintVariableCategory` 均为目标类别 → 二次应用判为无变化 → 空输入回落 `VR_DefaultCategory` 并成功应用。
+- 运行结果：`Automation RunTests BlueprintVariableBatch` 共 3 个测试（BatchChangeCategory / BatchChangeType / TabSpawn）全部 `Result={成功}`，进程 exit code 0。
+- 仍需人工验收：类别区布局与「已有类别…」下拉交互、多级类别在「我的蓝图」里的分组效果、一次 Ctrl+Z 撤销、只读/编译中禁用。

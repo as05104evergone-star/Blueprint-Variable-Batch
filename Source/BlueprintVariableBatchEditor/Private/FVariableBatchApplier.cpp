@@ -16,6 +16,7 @@
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
+#include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "FVariableBatchApplier"
@@ -575,4 +576,150 @@ FVariableBatchApplyResult FVariableBatchApplier::ApplyPlan(UBlueprint* Blueprint
 	return Result;
 }
 
+FVariableBatchCategoryPlan FVariableBatchApplier::BuildCategoryPlan(
+	UBlueprint* Blueprint,
+	const TArray<TSharedPtr<FVariableBatchEntry>>& Candidates,
+	const FText& RequestedCategory)
+{
+	FVariableBatchCategoryPlan Plan;
+
+	FText Error;
+	if (!IsBlueprintEditable(Blueprint, Error))
+	{
+		Plan.FailureReason = Error;
+		return Plan;
+	}
+
+	// 与引擎一致：空类别会被归一化成默认类别。
+	FText Requested = RequestedCategory;
+	if (Requested.ToString().TrimStartAndEnd().IsEmpty())
+	{
+		Requested = UEdGraphSchema_K2::VR_DefaultCategory;
+	}
+	Plan.TargetCategory = Requested;
+
+	for (const TSharedPtr<FVariableBatchEntry>& Candidate : Candidates)
+	{
+		if (!Candidate.IsValid())
+		{
+			continue;
+		}
+
+		// 局部变量不参与「我的蓝图」的类别分组，批量改类别时直接跳过。
+		if (Candidate->bIsLocal)
+		{
+			Plan.NumSkippedLocals++;
+			continue;
+		}
+
+		// 以蓝图里的当前类别为准（面板缓存可能已经过期）。
+		FText CurrentCategory = FBlueprintEditorUtils::GetBlueprintVariableCategory(Blueprint, Candidate->Name, nullptr);
+		if (CurrentCategory.IsEmpty())
+		{
+			CurrentCategory = UEdGraphSchema_K2::VR_DefaultCategory;
+		}
+
+		if (CurrentCategory.EqualTo(Requested))
+		{
+			continue;
+		}
+
+		Plan.ToChange.Add(Candidate);
+	}
+
+	if (Plan.ToChange.Num() == 0)
+	{
+		Plan.FailureReason = LOCTEXT("NoCategoryChangeNeeded", "选中的成员变量已经都在该类别下，没有需要修改的变量。");
+	}
+
+	return Plan;
+}
+
+bool FVariableBatchApplier::ConfirmCategoryPlan(UBlueprint* Blueprint, const FVariableBatchCategoryPlan& Plan)
+{
+	if (!Blueprint || !Plan.IsValid() || Plan.ToChange.Num() == 0)
+	{
+		return false;
+	}
+
+	FString Message = FString::Printf(
+		TEXT("将修改 %d 个成员变量的类别。\n目标类别：%s\n"),
+		Plan.ToChange.Num(),
+		*Plan.TargetCategory.ToString());
+
+	if (Plan.NumSkippedLocals > 0)
+	{
+		Message += FString::Printf(
+			TEXT("已跳过 %d 个局部变量（局部变量不参与「我的蓝图」分组）。\n"),
+			Plan.NumSkippedLocals);
+	}
+
+	Message += TEXT("类别只影响蓝图编辑器里的变量分组，不改变运行时数据布局，也不需要重建节点。\n");
+	Message += TEXT("整批修改可以用一次 Ctrl+Z 撤销。");
+
+	return FMessageDialog::Open(
+		EAppMsgType::OkCancel,
+		FText::FromString(Message),
+		LOCTEXT("ConfirmCategoryTitle", "批量修改变量类别")) == EAppReturnType::Ok;
+}
+
+FVariableBatchApplyResult FVariableBatchApplier::ApplyCategoryPlan(
+	UBlueprint* Blueprint,
+	const FVariableBatchCategoryPlan& Plan)
+{
+	FVariableBatchApplyResult Result;
+
+	if (!Blueprint || !Plan.IsValid() || Plan.ToChange.Num() == 0)
+	{
+		Result.StatusText = Plan.FailureReason;
+		return Result;
+	}
+
+	const FText NewCategory = Plan.TargetCategory;
+
+	const FScopedTransaction Transaction(LOCTEXT("BatchChangeVariableCategory", "批量修改变量类别"));
+	Blueprint->Modify();
+
+	for (const TSharedPtr<FVariableBatchEntry>& Entry : Plan.ToChange)
+	{
+		const int32 VariableIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, Entry->Name);
+		if (!Blueprint->NewVariables.IsValidIndex(VariableIndex))
+		{
+			continue;
+		}
+
+		Blueprint->NewVariables[VariableIndex].Category = NewCategory;
+
+		// 与引擎 SetBlueprintVariableCategory 一致：同步骨架类属性上的 Category 元数据，
+		// 让「我的蓝图」与详情面板都能读到新的类别；只写蓝图自己的（非原生）变量。
+		if (UClass* SkeletonClass = Blueprint->SkeletonGeneratedClass)
+		{
+			if (FProperty* TargetProperty = FindFProperty<FProperty>(SkeletonClass, Entry->Name))
+			{
+				const UClass* OuterClass = Cast<UClass>(TargetProperty->GetOwnerStruct());
+				const bool bIsNativeVar = (OuterClass == nullptr || OuterClass->ClassGeneratedBy == nullptr);
+				if (!bIsNativeVar)
+				{
+					TargetProperty->SetMetaData(TEXT("Category"), *NewCategory.ToString());
+				}
+			}
+		}
+
+		Result.ChangedNames.Add(Entry->DisplayName);
+		Result.NumChanged++;
+	}
+
+	if (Result.NumChanged > 0)
+	{
+		// 与引擎一致：类别变动也标记结构修改（编辑器会在帧末自动重编译，这里不额外调 CompileBlueprint）。
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+
+	Result.StatusText = FText::FromString(FString::Printf(
+		TEXT("已将 %d 个变量归入类别「%s」。"),
+		Result.NumChanged,
+		*NewCategory.ToString()));
+
+	return Result;
+}
 #undef LOCTEXT_NAMESPACE
